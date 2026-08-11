@@ -1,10 +1,14 @@
 
+import os
+
 import streamlit as st
 import pandas as pd
 import requests
 
-# Base URL of the Flask backend (resolved via the shared Docker network)
-BACKEND_URL = "http://backend:7860"
+# Base URL of the Flask backend. Defaults to the Docker Compose service name (resolved via the
+# shared Docker network); override with a BACKEND_URL environment variable for local testing
+# (e.g. "http://127.0.0.1:7860") or any other deployment topology.
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:7860")
 
 st.set_page_config(page_title="SuperKart Sales Prediction", page_icon="🛒", layout="centered")
 
@@ -48,11 +52,16 @@ if st.button("Predict", type="primary"):
             result = response.json()
             predicted_sales = result["Sales"]
             st.success(f"Predicted Product Store Sales Total: ₹{predicted_sales:,.2f}")
-            if "Sales_95pct_CI_Lower" in result:
+            # Named Sales_95pct_Empirical_* rather than Sales_95pct_CI_* to avoid implying a formally
+            # calibrated statistical confidence interval (see the backend app.py note).
+            if "Sales_95pct_Empirical_Lower" in result:
                 st.caption(
-                    f"Approximate 95% prediction interval: "
-                    f"₹{result['Sales_95pct_CI_Lower']:,.2f} – ₹{result['Sales_95pct_CI_Upper']:,.2f}"
+                    f"Approximate range (empirical, from the tree-ensemble's spread across trees - "
+                    f"not a formally calibrated statistical interval): "
+                    f"₹{result['Sales_95pct_Empirical_Lower']:,.2f} – ₹{result['Sales_95pct_Empirical_Upper']:,.2f}"
                 )
+            for warning in result.get("warnings", []):
+                st.warning(warning)
         else:
             st.error(f"API error ({response.status_code}): {response.json().get('error', response.text)}")
     except requests.exceptions.RequestException as exc:
@@ -77,10 +86,16 @@ if uploaded_file is not None:
             )
             if response.status_code == 200:
                 predictions = response.json()
+                # The backend may include a "_warnings" sidecar key (e.g. an unseen Store_Type in the
+                # uploaded CSV) alongside the per-row predictions.
+                batch_warnings = predictions.pop("_warnings", None)
                 result_df = pd.DataFrame(
                     {"Row": list(predictions.keys()), "Predicted_Sales": list(predictions.values())}
                 )
                 st.success("Batch prediction complete!")
+                if batch_warnings:
+                    for warning in batch_warnings:
+                        st.warning(warning)
                 st.dataframe(result_df)
                 st.download_button(
                     "Download predictions as CSV",
